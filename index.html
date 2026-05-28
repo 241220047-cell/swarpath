@@ -748,18 +748,18 @@ canvas{width:100%;height:270px;display:block}
   <div class="screen" id="scr-proc">
     <div class="proc-wrap">
       <div class="proc-title" id="proc-title">Processing your song</div>
-      <div class="proc-sub">AI is separating vocals on GPU · usually done in 30–90 seconds</div>
+      <div class="proc-sub">AI is separating vocals from instruments · takes 2–8 min first time</div>
       <div class="step-row">
         <div class="step-num sn-wait" id="sn1">1</div>
         <div style="flex:1">
-          <div class="step-txt">Prepare audio for GPU</div>
+          <div class="step-txt">Connect &amp; upload to AI server</div>
           <div class="step-detail" id="sd1">Waiting...</div>
         </div>
       </div>
       <div class="step-row">
         <div class="step-num sn-wait" id="sn2">2</div>
         <div style="flex:1">
-          <div class="step-txt">Demucs AI on GPU — strip instruments, keep vocals</div>
+          <div class="step-txt">Demucs AI — strip instruments, keep vocals</div>
           <div class="step-detail" id="sd2">Waiting...</div>
         </div>
       </div>
@@ -864,9 +864,8 @@ canvas{width:100%;height:270px;display:block}
   <div class="footer-copy">SwarPath v1.0 · Powered by Demucs AI · Open for all singers 🎤</div>
 </div>
 
-<script type="module">
-// Gradio client no longer needed — using Replicate GPU API directly
-// const HF_SPACE="hribhu/swarpath";
+<script>
+// Gradio removed — using Cloudflare Worker proxy instead
 const MIN_F=80,MAX_F=1100,PAST=4,FUTURE=4,VIEW=8,CH=270,HOP_MS=25,WIN_MS=50;
 const NOTES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
@@ -1061,13 +1060,11 @@ function draw(ct){
 }
 
 // ── Gradio API ──
-// ══════════════════════════════════════════════════════
-// CLOUDFLARE WORKER PROXY — hides API key, fixes CORS
-// ══════════════════════════════════════════════════════
-const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
-
 async function separateVocals(file){
-  // Step 1: Convert to base64 and send to Worker (Worker proxies to Replicate)
+  // ── CLOUDFLARE WORKER PROXY → Replicate GPU ──
+  const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev/"; // ← update after deploy
+
+  // Step 1: Convert file to base64
   stepUI(1,"run","Preparing audio ("+Math.round(file.size/1024)+"KB)...");
   const dataURI = await new Promise((res,rej)=>{
     const r=new FileReader();
@@ -1077,24 +1074,24 @@ async function separateVocals(file){
   });
   stepUI(1,"ok","Ready ✓");
 
-  // Step 2: Send base64 to Worker → Worker forwards to Replicate
+  // Step 2: Submit via worker
   stepUI(2,"run","Submitting to Demucs GPU...");
-  const createRes = await fetch(WORKER_URL+"/predict", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audio: dataURI })
+  const createRes = await fetch(WORKER_URL+"/predict",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({audio:dataURI})
   });
   if(!createRes.ok){
-    const err = await createRes.json().catch(()=>({}));
+    const err=await createRes.json().catch(()=>({}));
     throw new Error("Worker error: "+(err.detail||err.title||createRes.status));
   }
   const pred = await createRes.json();
-  if(pred.error) throw new Error("Replicate error: "+pred.error);
+  if(pred.error) throw new Error("Replicate: "+pred.error);
   const predId = pred.id;
 
-  // Step 3: Poll via worker until done
-  const startT = Date.now();
-  const timer = setInterval(()=>{
+  // Step 3: Poll via worker
+  const startT=Date.now();
+  const timer=setInterval(()=>{
     const s=Math.round((Date.now()-startT)/1000),m=Math.floor(s/60);
     stepUI(2,"run",`GPU separating vocals... ${m>0?m+"m ":""}${s%60}s — usually 30–90s`);
   },1000);
@@ -1103,18 +1100,16 @@ async function separateVocals(file){
     let tries=0;
     while(tries++<120){
       await new Promise(r=>setTimeout(r,2500));
-      const pollRes = await fetch(WORKER_URL+"/poll/"+predId);
-      const p = await pollRes.json();
-
+      const p=await(await fetch(WORKER_URL+"/poll/"+predId)).json();
       if(p.status==="succeeded"){
         clearInterval(timer);
         stepUI(2,"ok","Vocals isolated ✓ (GPU)");
-        let vocalsUrl;
-        if(typeof p.output==="string") vocalsUrl=p.output;
-        else if(Array.isArray(p.output)) vocalsUrl=p.output.find(u=>u.includes("vocal"))||p.output[0];
-        else if(typeof p.output==="object") vocalsUrl=p.output.vocals||p.output.vocal||Object.values(p.output)[0];
-        if(!vocalsUrl) throw new Error("No vocals URL in output");
-        return vocalsUrl;
+        let vurl;
+        if(typeof p.output==="string") vurl=p.output;
+        else if(Array.isArray(p.output)) vurl=p.output.find(u=>u.includes("vocal"))||p.output[0];
+        else if(typeof p.output==="object") vurl=p.output.vocals||p.output.vocal||Object.values(p.output)[0];
+        if(!vurl) throw new Error("No vocals URL in output");
+        return vurl;
       }
       if(p.status==="failed"||p.status==="canceled"){
         clearInterval(timer);
@@ -1123,10 +1118,7 @@ async function separateVocals(file){
     }
     clearInterval(timer);
     throw new Error("Timed out after 5 minutes");
-  }catch(e){
-    clearInterval(timer);
-    throw e;
-  }
+  }catch(e){ clearInterval(timer); throw e; }
 }
 
 async function extractPitch(buf){
@@ -1180,7 +1172,7 @@ async function handleFile(file){
   }catch(e){
     const el=document.getElementById("proc-err");
     el.style.display="block";
-    el.innerHTML="⚠ <b>"+e.message+"</b><br><span style='font-size:11px;color:var(--sub);display:block;margin-top:5px'>Powered by Replicate GPU · Check your internet connection and try again.</span>";
+    el.innerHTML="⚠ <b>"+e.message+"</b><br><span style='font-size:11px;color:var(--sub);display:block;margin-top:5px'>Make sure the HF Space is Running (green) at huggingface.co/spaces/hribhu/swarpath</span>";
     ["sn1","sn2","sn3"].forEach(id=>{if(document.getElementById(id).classList.contains("sn-run"))document.getElementById(id).className="step-num sn-err";});
   }
 }

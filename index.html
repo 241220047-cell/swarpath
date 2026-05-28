@@ -1062,13 +1062,12 @@ function draw(ct){
 
 // ── Gradio API ──
 // ══════════════════════════════════════════════════════
-// REPLICATE API — Demucs on GPU (~30-60 sec, not 18 min)
-// Runs on GitHub Pages with no CORS issues
+// CLOUDFLARE WORKER PROXY — hides API key, fixes CORS
+// Replace WORKER_URL after deploying cloudflare_worker.js
 // ══════════════════════════════════════════════════════
-const REPLICATE_KEY = "r8_9CxTI06SStfZFxBXEnH3I0WzBEjoOLK2kOI3G";
-const DEMUCS_VERSION = "adirik/demucs:7643256b515a4eee8f36dfe5fcd6f4c52a4248b8f9a45ded4f7a55a86acaade6";
+const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
 
-// Convert File to base64 data URI (no server upload needed)
+// Convert File to base64 data URI
 function fileToDataURI(file){
   return new Promise((res,rej)=>{
     const r=new FileReader();
@@ -1084,33 +1083,22 @@ async function separateVocals(file){
   const dataURI = await fileToDataURI(file);
   stepUI(1,"ok","Ready ✓");
 
-  // Step 2: Submit to Replicate GPU
+  // Step 2: Submit to worker → worker calls Replicate with hidden key
   stepUI(2,"run","Submitting to Demucs GPU...");
-  const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+  const createRes = await fetch(WORKER_URL+"/predict", {
     method: "POST",
-    headers: {
-      "Authorization": "Token " + REPLICATE_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      version: DEMUCS_VERSION,
-      input: {
-        audio: dataURI,
-        model: "htdemucs",
-        stem: "vocals",
-        output_format: "mp3",
-        clip_mode: "rescale"
-      }
-    })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audio: dataURI })
   });
   if(!createRes.ok){
     const err = await createRes.json().catch(()=>({}));
-    throw new Error("Replicate error: "+(err.detail||err.title||createRes.status));
+    throw new Error("Worker error: "+(err.detail||err.title||createRes.status));
   }
   const pred = await createRes.json();
+  if(pred.error) throw new Error("Replicate error: "+pred.error);
   const predId = pred.id;
 
-  // Step 3: Poll until done
+  // Step 3: Poll via worker until done
   const startT = Date.now();
   const timer = setInterval(()=>{
     const s=Math.round((Date.now()-startT)/1000),m=Math.floor(s/60);
@@ -1121,15 +1109,12 @@ async function separateVocals(file){
     let tries=0;
     while(tries++<120){
       await new Promise(r=>setTimeout(r,2500));
-      const pollRes = await fetch("https://api.replicate.com/v1/predictions/"+predId,{
-        headers:{"Authorization":"Token "+REPLICATE_KEY}
-      });
+      const pollRes = await fetch(WORKER_URL+"/poll/"+predId);
       const p = await pollRes.json();
 
       if(p.status==="succeeded"){
         clearInterval(timer);
         stepUI(2,"ok","Vocals isolated ✓ (GPU)");
-        // Output: object with vocals key, or array, or string
         let vocalsUrl;
         if(typeof p.output==="string") vocalsUrl=p.output;
         else if(Array.isArray(p.output)) vocalsUrl=p.output.find(u=>u.includes("vocal"))||p.output[0];

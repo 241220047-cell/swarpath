@@ -748,11 +748,11 @@ canvas{width:100%;height:270px;display:block}
   <div class="screen" id="scr-proc">
     <div class="proc-wrap">
       <div class="proc-title" id="proc-title">Processing your song</div>
-      <div class="proc-sub">AI is separating vocals on GPU · usually done in 30–90 seconds</div>
+      <div class="proc-sub">Uploading your file, then GPU separates the vocals · usually 30–90s</div>
       <div class="step-row">
         <div class="step-num sn-wait" id="sn1">1</div>
         <div style="flex:1">
-          <div class="step-txt">Prepare audio for GPU</div>
+          <div class="step-txt">Upload audio to temp server</div>
           <div class="step-detail" id="sd1">Waiting...</div>
         </div>
       </div>
@@ -1063,32 +1063,37 @@ function draw(ct){
 // ── Gradio API ──
 // ══════════════════════════════════════════════════════
 // CLOUDFLARE WORKER PROXY — hides API key, fixes CORS
-// Replace WORKER_URL after deploying cloudflare_worker.js
 // ══════════════════════════════════════════════════════
 const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
 
-// Convert File to base64 data URI
-function fileToDataURI(file){
-  return new Promise((res,rej)=>{
-    const r=new FileReader();
-    r.onload=()=>res(r.result);
-    r.onerror=rej;
-    r.readAsDataURL(file);
-  });
-}
-
 async function separateVocals(file){
-  // Step 1: Convert file to base64
-  stepUI(1,"run","Preparing audio ("+Math.round(file.size/1024)+"KB)...");
-  const dataURI = await fileToDataURI(file);
-  stepUI(1,"ok","Ready ✓");
+  // Step 1: Upload file to tmpfiles.org → get a public URL for Replicate
+  stepUI(1,"run","Uploading audio ("+Math.round(file.size/1024)+"KB)...");
+  let audioUrl;
+  try{
+    const form = new FormData();
+    form.append("file", file);
+    const upRes = await fetch("https://tmpfiles.org/api/v1/upload", {
+      method: "POST",
+      body: form
+    });
+    if(!upRes.ok) throw new Error("Upload HTTP "+upRes.status);
+    const upJson = await upRes.json();
+    // tmpfiles returns { data: { url: "https://tmpfiles.org/XXXXXX/filename" } }
+    // convert to direct download URL: tmpfiles.org/dl/XXXXXX/filename
+    audioUrl = upJson.data.url.replace("tmpfiles.org/","tmpfiles.org/dl/");
+    if(!audioUrl) throw new Error("No URL returned");
+  }catch(e){
+    throw new Error("File upload failed: "+e.message);
+  }
+  stepUI(1,"ok","Uploaded ✓");
 
-  // Step 2: Submit to worker → worker calls Replicate with hidden key
+  // Step 2: Send URL to Worker → Worker calls Replicate with hidden key
   stepUI(2,"run","Submitting to Demucs GPU...");
   const createRes = await fetch(WORKER_URL+"/predict", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audio: dataURI })
+    body: JSON.stringify({ audio: audioUrl })
   });
   if(!createRes.ok){
     const err = await createRes.json().catch(()=>({}));

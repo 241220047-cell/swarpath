@@ -1067,21 +1067,20 @@ function draw(ct){
 const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
 
 async function separateVocals(file){
-  // Step 1: Upload file to tmpfiles.org → get a public URL for Replicate
+  // Step 1: Upload file to file.io → get a public URL for Replicate
   stepUI(1,"run","Uploading audio ("+Math.round(file.size/1024)+"KB)...");
   let audioUrl;
   try{
     const form = new FormData();
     form.append("file", file);
-    const upRes = await fetch("https://tmpfiles.org/api/v1/upload", {
+    const upRes = await fetch("https://file.io/?expires=1h", {
       method: "POST",
       body: form
     });
     if(!upRes.ok) throw new Error("Upload HTTP "+upRes.status);
     const upJson = await upRes.json();
-    // tmpfiles returns { data: { url: "https://tmpfiles.org/XXXXXX/filename" } }
-    // convert to direct download URL: tmpfiles.org/dl/XXXXXX/filename
-    audioUrl = upJson.data.url.replace("tmpfiles.org/","tmpfiles.org/dl/");
+    if(!upJson.success) throw new Error(upJson.message||"Upload failed");
+    audioUrl = upJson.link;
     if(!audioUrl) throw new Error("No URL returned");
   }catch(e){
     throw new Error("File upload failed: "+e.message);

@@ -748,11 +748,11 @@ canvas{width:100%;height:270px;display:block}
   <div class="screen" id="scr-proc">
     <div class="proc-wrap">
       <div class="proc-title" id="proc-title">Processing your song</div>
-      <div class="proc-sub">Uploading your file, then GPU separates the vocals · usually 30–90s</div>
+      <div class="proc-sub">AI is separating vocals on GPU · usually done in 30–90 seconds</div>
       <div class="step-row">
         <div class="step-num sn-wait" id="sn1">1</div>
         <div style="flex:1">
-          <div class="step-txt">Upload audio to temp server</div>
+          <div class="step-txt">Prepare audio for GPU</div>
           <div class="step-detail" id="sd1">Waiting...</div>
         </div>
       </div>
@@ -1067,32 +1067,22 @@ function draw(ct){
 const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
 
 async function separateVocals(file){
-  // Step 1: Upload file to file.io → get a public URL for Replicate
-  stepUI(1,"run","Uploading audio ("+Math.round(file.size/1024)+"KB)...");
-  let audioUrl;
-  try{
-    const form = new FormData();
-    form.append("file", file);
-    const upRes = await fetch("https://file.io/?expires=1h", {
-      method: "POST",
-      body: form
-    });
-    if(!upRes.ok) throw new Error("Upload HTTP "+upRes.status);
-    const upJson = await upRes.json();
-    if(!upJson.success) throw new Error(upJson.message||"Upload failed");
-    audioUrl = upJson.link;
-    if(!audioUrl) throw new Error("No URL returned");
-  }catch(e){
-    throw new Error("File upload failed: "+e.message);
-  }
-  stepUI(1,"ok","Uploaded ✓");
+  // Step 1: Convert to base64 and send to Worker (Worker proxies to Replicate)
+  stepUI(1,"run","Preparing audio ("+Math.round(file.size/1024)+"KB)...");
+  const dataURI = await new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result);
+    r.onerror=rej;
+    r.readAsDataURL(file);
+  });
+  stepUI(1,"ok","Ready ✓");
 
-  // Step 2: Send URL to Worker → Worker calls Replicate with hidden key
+  // Step 2: Send base64 to Worker → Worker forwards to Replicate
   stepUI(2,"run","Submitting to Demucs GPU...");
   const createRes = await fetch(WORKER_URL+"/predict", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audio: audioUrl })
+    body: JSON.stringify({ audio: dataURI })
   });
   if(!createRes.ok){
     const err = await createRes.json().catch(()=>({}));

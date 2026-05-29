@@ -1062,37 +1062,32 @@ function draw(ct){
 
 // ── Gradio API ──
 async function separateVocals(file){
-  // ── CLOUDFLARE WORKER PROXY → Replicate GPU ──
   const WORKER_URL = "https://swarpath.ribhuranjantripathi.workers.dev";
 
-  // Step 1: Convert file to base64
-  stepUI(1,"run","Preparing audio ("+Math.round(file.size/1024)+"KB)...");
-  const dataURI = await new Promise((res,rej)=>{
-    const r=new FileReader();
-    r.onload=()=>res(r.result);
-    r.onerror=rej;
-    r.readAsDataURL(file);
-  });
-  stepUI(1,"ok","Ready ✓");
+  // Step 1: Send file directly as FormData — no base64 size issues
+  stepUI(1,"run","Uploading "+Math.round(file.size/1024)+"KB to server...");
+  const fd = new FormData();
+  fd.append("file", file, file.name);
 
-  // Step 2: Submit via worker
-  stepUI(2,"run","Submitting to Demucs GPU...");
-  const createRes = await fetch(WORKER_URL+"/predict",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({audio:dataURI})
+  const createRes = await fetch(WORKER_URL+"/predict", {
+    method: "POST",
+    body: fd   // NO Content-Type header — let browser set multipart boundary
   });
+
   if(!createRes.ok){
-    const err=await createRes.json().catch(()=>({}));
-    throw new Error("Worker error: "+(err.detail||err.title||createRes.status));
+    const err = await createRes.json().catch(()=>({}));
+    throw new Error("Worker error ("+createRes.status+"): "+(err.error||JSON.stringify(err)));
   }
   const pred = await createRes.json();
-  if(pred.error) throw new Error("Replicate: "+pred.error);
-  const predId = pred.id;
+  if(pred.error) throw new Error("Server error: "+pred.error);
+  if(!pred.id)   throw new Error("No prediction ID returned: "+JSON.stringify(pred));
 
-  // Step 3: Poll via worker
-  const startT=Date.now();
-  const timer=setInterval(()=>{
+  stepUI(1,"ok","Uploaded ✓");
+  stepUI(2,"run","Demucs GPU separating vocals...");
+
+  // Step 2: Poll for result
+  const startT = Date.now();
+  const timer = setInterval(()=>{
     const s=Math.round((Date.now()-startT)/1000),m=Math.floor(s/60);
     stepUI(2,"run",`GPU separating vocals... ${m>0?m+"m ":""}${s%60}s — usually 30–90s`);
   },1000);
@@ -1101,7 +1096,7 @@ async function separateVocals(file){
     let tries=0;
     while(tries++<120){
       await new Promise(r=>setTimeout(r,2500));
-      const p=await(await fetch(WORKER_URL+"/poll/"+predId)).json();
+      const p = await(await fetch(WORKER_URL+"/poll/"+pred.id)).json();
       if(p.status==="succeeded"){
         clearInterval(timer);
         stepUI(2,"ok","Vocals isolated ✓ (GPU)");
@@ -1109,7 +1104,7 @@ async function separateVocals(file){
         if(typeof p.output==="string") vurl=p.output;
         else if(Array.isArray(p.output)) vurl=p.output.find(u=>u.includes("vocal"))||p.output[0];
         else if(typeof p.output==="object") vurl=p.output.vocals||p.output.vocal||Object.values(p.output)[0];
-        if(!vurl) throw new Error("No vocals URL in output");
+        if(!vurl) throw new Error("No vocals URL in Replicate output");
         return vurl;
       }
       if(p.status==="failed"||p.status==="canceled"){

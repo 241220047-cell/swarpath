@@ -1064,24 +1064,49 @@ function draw(ct){
 async function separateVocals(file){
   const WORKER = "https://swarpath.ribhuranjantripathi.workers.dev";
 
-  // Step 1: base64 encode
+  // Step 1: browser encodes to base64 data URI (no CPU limit here)
   stepUI(1,"run","Encoding audio ("+Math.round(file.size/1024)+"KB)...");
-  const dataURI = await new Promise((res,rej)=>{
-    const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file);
+  const dataUri = await new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result);
+    r.onerror=rej;
+    r.readAsDataURL(file);
   });
   stepUI(1,"ok","Ready ✓");
 
-  // Step 2: send to worker
+  // Step 2: send data URI as plain text — no JSON wrapper = no JSON parse error
   stepUI(2,"run","Uploading to GPU server...");
   const createRes = await fetch(WORKER+"/predict",{
     method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({audio:dataURI}),
+    headers:{"Content-Type":"text/plain"},
+    body:dataUri,
   });
   const predJson = await createRes.json().catch(()=>({}));
   if(!createRes.ok) throw new Error("Worker error "+createRes.status+": "+(predJson.error||JSON.stringify(predJson).slice(0,120)));
   if(!predJson.id)  throw new Error("No prediction ID: "+JSON.stringify(predJson).slice(0,120));
 
+  // Step 3: poll (unchanged)
+  const startT=Date.now();
+  const timer=setInterval(()=>{
+    const s=Math.round((Date.now()-startT)/1000),m=Math.floor(s/60);
+    stepUI(2,"run",`Demucs GPU running... ${m>0?m+"m ":""}${s%60}s`);
+  },1000);
+  try{
+    for(let i=0;i<120;i++){
+      await new Promise(r=>setTimeout(r,3000));
+      const p=await(await fetch(WORKER+"/poll/"+predJson.id)).json();
+      if(p.status==="succeeded"){
+        clearInterval(timer); stepUI(2,"ok","Vocals isolated ✓");
+        const o=p.output;
+        let vurl=typeof o==="string"?o:Array.isArray(o)?o.find(u=>u.includes("vocal"))||o[0]:o?.vocals||o?.vocal||Object.values(o||{})[0];
+        if(!vurl) throw new Error("No vocals URL in output");
+        return vurl;
+      }
+      if(p.status==="failed"||p.status==="canceled"){ clearInterval(timer); throw new Error("Demucs: "+(p.error||p.status)); }
+    }
+    clearInterval(timer); throw new Error("Timed out");
+  }catch(e){ clearInterval(timer); throw e; }
+}
   // Step 3: poll
   const startT=Date.now();
   const timer=setInterval(()=>{
